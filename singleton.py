@@ -16,7 +16,7 @@ class SingleInstance:
     """
     If you want to prevent your script from running in parallel just instantiate SingleInstance() class. If is there another instance already running it will throw a `SingleInstanceException`.
 
-    >>> import tendo
+    >>> import tendosingleton
     ... me = SingleInstance()
 
     This option is very useful if you have scripts executed by crontab at small amounts of time.
@@ -116,7 +116,7 @@ class testSingleton(unittest.TestCase):
         # instance running
         assert p.exitcode != 0, "%s != 0 (3rd execution)" % p.exitcode
 
-logger = logging.getLogger("tendo.singleton")
+logger = logging.getLogger("tendosingleton")
 logger.addHandler(logging.StreamHandler())
 
 if __name__ == "__main__":
