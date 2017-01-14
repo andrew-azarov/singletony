@@ -1,3 +1,0 @@
-pip
-six>=1.7.2
-setuptools
