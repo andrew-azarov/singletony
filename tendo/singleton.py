@@ -5,7 +5,6 @@ import os
 import tempfile
 import unittest
 import logging
-from multiprocessing import Process
 
 
 class SingleInstanceException(BaseException):
@@ -32,37 +31,25 @@ class SingleInstance:
         self.initialized = False
         basename = os.path.splitext(os.path.abspath(sys.argv[0]))[0].replace(
             "/", "-").replace(":", "").replace("\\", "-") + '-%s' % flavor_id + '.lock'
-        # os.path.splitext(os.path.abspath(sys.modules['__main__'].__file__))[0].replace("/", "-").replace(":", "").replace("\\", "-") + '-%s' % flavor_id + '.lock'
         self.lockfile = os.path.normpath(
             tempfile.gettempdir() + '/' + basename)
 
         logger.debug("SingleInstance lockfile: " + self.lockfile)
-        if sys.platform == 'win32':
-            try:
-                # file already exists, we try to remove (in case previous
-                # execution was interrupted)
-                if os.path.exists(self.lockfile):
-                    os.unlink(self.lockfile)
-                self.fd = os.open(
-                    self.lockfile, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-            except OSError:
-                type, e, tb = sys.exc_info()
-                if e.errno == 13:
-                    logger.error(
-                        "Another instance is already running, quitting.")
-                    raise SingleInstanceException()
-                print(e.errno)
-                raise
-        else:  # non Windows
-            import fcntl
-            self.fp = open(self.lockfile, 'w')
-            self.fp.flush()
-            try:
-                fcntl.lockf(self.fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except IOError:
-                logger.warning(
+        try:
+            # file already exists, we try to remove (in case previous
+            # execution was interrupted)
+            if os.path.exists(self.lockfile):
+                os.unlink(self.lockfile)
+            self.fd = os.open(
+                self.lockfile, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+        except OSError:
+            type, e, tb = sys.exc_info()
+            if e.errno == 13:
+                logger.error(
                     "Another instance is already running, quitting.")
-                raise SingleInstanceException()
+                raise SingleInstanceException(
+                    "Another instance is already running, quitting.")
+            raise
         self.initialized = True
 
     def __del__(self):
@@ -71,21 +58,15 @@ class SingleInstance:
         if not self.initialized:
             return
         try:
-            if sys.platform == 'win32':
-                if hasattr(self, 'fd'):
-                    os.close(self.fd)
-                    os.unlink(self.lockfile)
+            if hasattr(self, 'fd'):
+                os.close(self.fd)
+                os.unlink(self.lockfile)
             else:
-                import fcntl
-                fcntl.lockf(self.fp, fcntl.LOCK_UN)
-                # os.close(self.fp)
-                if os.path.isfile(self.lockfile):
-                    os.unlink(self.lockfile)
+                raise SingleInstanceException(
+                    "No file descriptor in the instance, yet we are deleting something!?")
         except Exception as e:
-            if logger:
-                logger.warning(e)
-            else:
-                print("Unloggable error: %s" % e)
+            # We should not be here at all
+            logger.warning(e)
             sys.exit(-1)
 
 
@@ -101,6 +82,10 @@ def f(name):
 
 
 class testSingleton(unittest.TestCase):
+
+    def __init__(self, *args, **kwargs):
+        super(TestingClass, self).__init__(*args, **kwargs)
+        from multiprocessing import Process
 
     def test_1(self):
         me = SingleInstance(flavor_id="test-1")
