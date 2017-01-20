@@ -131,7 +131,7 @@ class Singlet:
         else:
             # By this moment the file should be locked or we should exit so
             # there should realistically be no error here, or it can raise
-            oldPid = os.read(self.fd, 1024).strip()
+            oldPid = os.read(self.fd, 64).strip().rstrip("#")
             if oldPid and oldPid != self.pid and pid_exists(oldPid):
                 # Some OS actually recycle pids within same range so we
                 # have to check whether oldPid is not the new one so this
@@ -155,7 +155,8 @@ class Singlet:
             if hasattr(os, "ftruncate"):
                 os.ftruncate(self.fd, 0)  # Erase
             os.lseek(self.fd, 0, 0)  # Rewind
-            os.write(self.fd, self.pid)  # Write PID
+            # Write PID with WIN fix
+            os.write(self.fd, self.pid.rjust(64, "#"))
             if hasattr(os, "fsync"):
                 os.fsync(self.fd)
 
