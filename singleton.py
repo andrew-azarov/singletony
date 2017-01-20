@@ -3,8 +3,58 @@
 import sys
 import os
 import tempfile
-import unittest
 import logging
+import errno
+import unittest
+
+
+def pid_exists(pid):
+    """Check whether pid exists in the current process table."""
+    # http://stackoverflow.com/a/23409343/2010538
+    # http://stackoverflow.com/a/28065945/2010538
+    if os.name != 'nt':
+        import errno
+        if pid <= 0:
+            return False
+        try:
+            os.kill(pid, 0)
+        except OSError as e:
+            return e.errno == errno.EPERM
+        else:
+            return True
+    else:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        HANDLE = ctypes.c_void_p
+        DWORD = ctypes.c_ulong
+        LPDWORD = ctypes.POINTER(DWORD)
+
+        class ExitCodeProcess(ctypes.Structure):
+            _fields_ = [('hProcess', HANDLE),
+                        ('lpExitCode', LPDWORD)]
+
+        PROCESS_QUERY_INFORMATION = 0x1000
+        process = kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid)
+        if not process:
+            return False
+
+        ec = ExitCodeProcess()
+        out = kernel32.GetExitCodeProcess(process, ctypes.byref(ec))
+        if not out:
+            err = kernel32.GetLastError()
+            if kernel32.GetLastError() == 5:
+                # Access is denied.
+                logger.warning("Access is denied to get pid info.")
+            kernel32.CloseHandle(process)
+            return False
+        elif bool(ec.lpExitCode):
+            # print ec.lpExitCode.contents
+            # There is an exit code, it quit
+            kernel32.CloseHandle(process)
+            return False
+        # No exit code, it's running.
+        kernel32.CloseHandle(process)
+        return True
 
 
 class SingleInstanceException(BaseException):
@@ -14,60 +64,90 @@ class SingleInstanceException(BaseException):
 class SingleInstance:
 
     """
-    If you want to prevent your script from running in parallel just instantiate SingleInstance() class. If is there another instance already running it will throw a `SingleInstanceException`.
+    If you want to prevent your script from running in parallel just instantiate
+    SingleInstance() class. If is there another instance already running it will
+    throw a `SingleInstanceException`.
 
     >>> import tendosingleton
     ... me = SingleInstance()
 
-    This option is very useful if you have scripts executed by crontab at small amounts of time.
+    This option is very useful if you have scripts executed by crontab at small
+    amounts of time.
 
-    Remember that this works by creating a lock file with a filename based on the full path to the script file.
+    Remember that this works by creating a lock file with a filename based on the
+    full path to the script file.
 
-    Providing a flavor_id will augment the filename with the provided flavor_id, allowing you to create multiple singleton instances from the same file. This is particularly useful if you want specific functions to have their own singleton instances.
+    Providing a flavor_id will augment the filename with the provided flavor_id,
+    allowing you to create multiple singleton instances from the same file. This
+    is particularly useful if you want specific functions to have their own
+    singleton instances.
     """
 
     def __init__(self, flavor_id=""):
-        import sys
-        self.initialized = False
         basename = os.path.splitext(os.path.abspath(sys.argv[0]))[0].replace(
-            "/", "-").replace(":", "").replace("\\", "-") + '-%s' % flavor_id + '.lock'
+            "/", "-").replace(":", "").replace("\\", "-") + '-{}'.format(flavor_id) + '.lock'
         self.lockfile = os.path.normpath(
             tempfile.gettempdir() + '/' + basename)
-
+        self.pid = str(os.getpid())
+        self.fd = None
         logger.debug("SingleInstance lockfile: " + self.lockfile)
+        oldPid = None
         try:
-            # file already exists, we try to remove (in case previous
-            # execution was interrupted)
-            if os.path.exists(self.lockfile):
-                os.unlink(self.lockfile)
-            self.fd = os.open(
-                self.lockfile, os.O_CREAT | os.O_EXCL | os.O_RDWR)
-        except OSError:
-            type, e, tb = sys.exc_info()
-            if e.errno == 13:
+            self.fd = os.open(self.lockfile, os.O_CREAT |
+                              os.O_EXCL | os.O_RDWR)
+        except (IOError, OSError) as e:
+            if e.errno == errno.ENOENT:
+                # It's ok, we just log it as info but the pid file is
+                # non existent
+                logger.info(e)
+            elif e.errno == errno.EPERM:
                 logger.error(
                     "Another instance is already running, quitting.")
                 raise SingleInstanceException(
                     "Another instance is already running, quitting.")
-            raise
-        self.initialized = True
+            else:
+                logger.exception("Something went wrong")
+                # Anything else is horribly wrong, we need to raise to the
+                # upper level so the following code in this try clause
+                # won't execute.
+                raise
+        else:
+            # By this moment the file should be locked or we should exit so
+            # there should realistically be no error here, or it can raise
+            oldPid = os.read(self.fd, 1024).strip()
+            if oldPid and oldPid != self.pid and pid_exists(oldPid):
+                # Some OS actually recycle pids within same range so we
+                # have to check whether oldPid is not the new one so this
+                # won't fire up (*BSD).
+                # If not and it is still running we'd rather actually exit
+                # right here.
+                try:
+                    os.close(self.fd)
+                except OSError as e:
+                    # We shouldn't raise here anything. Because we don't
+                    # actually care
+                    logger.exception("Interesting state")
+                logger.error(
+                    "Another instance is already running, quitting.")
+                raise SingleInstanceException(
+                    "Another instance is already running, quitting.")
+            # Barring any OS/Hardware issue this musn't throw anything. But
+            # even if it throws we should raise it because it means we
+            # shouldn't run and some serious problem is already happening. So
+            # no, I'm not going to escape this one in try/except.
+            os.ftruncate(self.fd, 0)  # Erase
+            os.lseek(self.fd, 0, 0)  # Rewind
+            os.write(self.fd, self.pid)  # Write PID
 
     def __del__(self):
-        import sys
-        import os
-        if not self.initialized:
-            return
-        try:
-            if hasattr(self, 'fd'):
+        # If we are not initialized don't run the clause
+        if self.fd:
+            try:
                 os.close(self.fd)
                 os.unlink(self.lockfile)
-            else:
-                raise SingleInstanceException(
-                    "No file descriptor in the instance, yet we are deleting something!?")
-        except Exception as e:
-            # We should not be here at all
-            logger.warning(e)
-            sys.exit(-1)
+            except:
+                logger.exception("Unknown issue on exit")
+                raise
 
 
 def f(name):
