@@ -13,5 +13,5 @@ The class will throw `IOError` and `OSError` in case there are hardware or OS le
     
 This is helpful for both daemons and simple crontab scripts. Works on *NIX and Windows OS's.
 
-By default this creates a lock file with a filename based on the full path to the script file.
+By default this creates a lock file with a filename based on the program name.
 In case you want to remove the file or finish the lock beforehand just delete the instance.
