@@ -1,4 +1,22 @@
 #! /usr/bin/env python
+"""
+Copyright (c) 2017 Andrew Azarov
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+"""
 
 import sys
 import os
@@ -42,7 +60,7 @@ def pid_exists(pid):
         out = kernel32.GetExitCodeProcess(process, ctypes.byref(ec))
         if not out:
             err = kernel32.GetLastError()
-            if kernel32.GetLastError() == 5:
+            if err == 5:  # Look after this change, maybe previous line was just a skip
                 # Access is denied.
                 logger.warning("Access is denied to get pid info.")
             kernel32.CloseHandle(process)
@@ -57,40 +75,39 @@ def pid_exists(pid):
         return True
 
 
-class SingleInstanceException(BaseException):
+class SingletException(BaseException):
     pass
 
 
-class SingleInstance:
+class Singlet:
 
     """
-    If you want to prevent your script from running in parallel just instantiate
-    SingleInstance() class. If is there another instance already running it will
-    throw a `SingleInstanceException`.
+    Based on tendo.singleton
+    This module provides a Singlet() class which atomically creates a lock file
+    containing PID of the running process to prevent parallel execution of the
+    same program. In case there is any other instance running already a
+    `SingletException` will be thrown. The class will throw `IOError` and
+    `OSError` in case there are hardware or OS level corruption.
 
-    >>> import tendosingleton
-    ... me = SingleInstance()
+    >>> from singletony import Singlet
+    ... me = Singlet(filename="test.lock", path="/tmp")
 
-    This option is very useful if you have scripts executed by crontab at small
-    amounts of time.
+    This is helpful for both daemons and simple crontab scripts. Works on *NIX
+    and Windows OS's.
 
-    Remember that this works by creating a lock file with a filename based on the
+    By default this creates a lock file with a filename based on the
     full path to the script file.
-
-    Providing a flavor_id will augment the filename with the provided flavor_id,
-    allowing you to create multiple singleton instances from the same file. This
-    is particularly useful if you want specific functions to have their own
-    singleton instances.
     """
 
-    def __init__(self, flavor_id=""):
-        basename = os.path.splitext(os.path.abspath(sys.argv[0]))[0].replace(
-            "/", "-").replace(":", "").replace("\\", "-") + '-{}'.format(flavor_id) + '.lock'
-        self.lockfile = os.path.normpath(
-            tempfile.gettempdir() + '/' + basename)
+    def __init__(self, filename=None, path=None):
+        if not filename:
+            filename = os.path.basename(sys.argv[0]) + '.lock'
+        if not path:
+            path = tempfile.gettempdir()
+        self.lockfile = os.path.normpath(path + '/' + filename)
         self.pid = str(os.getpid())
         self.fd = None
-        logger.debug("SingleInstance lockfile: " + self.lockfile)
+        logger.debug("Singlet lockfile: " + self.lockfile)
         oldPid = None
         try:
             self.fd = os.open(self.lockfile, os.O_CREAT |
@@ -100,10 +117,10 @@ class SingleInstance:
                 # It's ok, we just log it as info but the pid file is
                 # non existent
                 logger.info(e)
-            elif e.errno == errno.EPERM:
+            elif e.errno in (errno.EPERM, errno.EEXIST):
                 logger.error(
                     "Another instance is already running, quitting.")
-                raise SingleInstanceException(
+                raise SingletException(
                     "Another instance is already running, quitting.")
             else:
                 logger.exception("Something went wrong")
@@ -129,15 +146,18 @@ class SingleInstance:
                     logger.exception("Interesting state")
                 logger.error(
                     "Another instance is already running, quitting.")
-                raise SingleInstanceException(
+                raise SingletException(
                     "Another instance is already running, quitting.")
             # Barring any OS/Hardware issue this musn't throw anything. But
             # even if it throws we should raise it because it means we
             # shouldn't run and some serious problem is already happening. So
             # no, I'm not going to escape this one in try/except.
-            os.ftruncate(self.fd, 0)  # Erase
+            if hasattr(os, "ftruncate"):
+                os.ftruncate(self.fd, 0)  # Erase
             os.lseek(self.fd, 0, 0)  # Rewind
             os.write(self.fd, self.pid)  # Write PID
+            if hasattr(os, "fsync"):
+                os.fsync(self.fd)
 
     def __del__(self):
         # If we are not initialized don't run the clause
@@ -154,8 +174,8 @@ def f(name):
     tmp = logger.level
     logger.setLevel(logging.CRITICAL)  # we do not want to see the warning
     try:
-        me2 = SingleInstance(flavor_id=name)  # noqa
-    except SingleInstanceException:
+        me2 = Singlet(filename=name)  # noqa
+    except SingletException:
         sys.exit(-1)
     logger.setLevel(tmp)
     pass
@@ -163,12 +183,8 @@ def f(name):
 
 class testSingleton(unittest.TestCase):
 
-    def __init__(self, *args, **kwargs):
-        super(TestingClass, self).__init__(*args, **kwargs)
-        from multiprocessing import Process
-
     def test_1(self):
-        me = SingleInstance(flavor_id="test-1")
+        me = Singlet(filename="test-1")
         del me  # now the lock should be removed
         assert True
 
@@ -180,7 +196,7 @@ class testSingleton(unittest.TestCase):
         assert p.exitcode == 0, "%s != 0" % p.exitcode
 
     def test_3(self):
-        me = SingleInstance(flavor_id="test-3")  # noqa -- me should still kept
+        me = Singlet(filename="test-3")  # noqa -- me should still kept
         p = Process(target=f, args=("test-3",))
         p.start()
         p.join()
@@ -200,5 +216,6 @@ logger = logging.getLogger("tendosingleton")
 logger.addHandler(logging.StreamHandler())
 
 if __name__ == "__main__":
+    from multiprocessing import Process
     logger.setLevel(logging.DEBUG)
     unittest.main()
