@@ -107,7 +107,7 @@ class Singlet:
         self.lockfile = os.path.normpath(path + '/' + filename)
         self.pid = str(os.getpid())
         self.fd = None
-        logger.debug("Singlet lockfile: " + self.lockfile)
+        logger.info("Singlet lockfile: " + self.lockfile)
         oldPid = None
         try:
             self.fd = os.open(self.lockfile, os.O_CREAT |
@@ -172,10 +172,12 @@ class Singlet:
 
 
 def f(name):
+    from time import sleep
     tmp = logger.level
     logger.setLevel(logging.CRITICAL)  # we do not want to see the warning
     try:
         me2 = Singlet(filename=name)  # noqa
+        sleep(1)
     except SingletException:
         sys.exit(-1)
     logger.setLevel(tmp)
@@ -186,8 +188,9 @@ class testSingleton(unittest.TestCase):
 
     def test_1(self):
         me = Singlet(filename="test-1")
+        save = me.lockfile
         del me  # now the lock should be removed
-        assert True
+        assert not os.path.isfile(save)
 
     def test_2(self):
         p = Process(target=f, args=("test-2",))
@@ -213,7 +216,7 @@ class testSingleton(unittest.TestCase):
         # instance running
         assert p.exitcode != 0, "%s != 0 (3rd execution)" % p.exitcode
 
-logger = logging.getLogger("tendosingleton")
+logger = logging.getLogger("singletony")
 logger.addHandler(logging.StreamHandler())
 
 if __name__ == "__main__":
