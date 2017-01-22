@@ -131,7 +131,7 @@ class Singlet:
         else:
             # By this moment the file should be locked or we should exit so
             # there should realistically be no error here, or it can raise
-            oldPid = os.read(self.fd, 64).strip().rstrip("#")
+            oldPid = os.read(self.fd, 64).strip().lstrip("#")
             if oldPid and oldPid != self.pid and pid_exists(oldPid):
                 # Some OS actually recycle pids within same range so we
                 # have to check whether oldPid is not the new one so this
