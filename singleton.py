@@ -142,6 +142,7 @@ class Singlet:
             if e.errno in (errno.EPERM, errno.EWOULDBLOCK):
                 logger.error(
                     "Another instance is already running, quitting.")
+                self.fd = None
                 raise SingletException(
                     "Another instance is already running, quitting.")
             elif e.errno == errno.EEXIST:
@@ -158,16 +159,19 @@ class Singlet:
                     if e.errno in (errno.EPERM, errno.EWOULDBLOCK):
                         logger.error(
                             "Another instance is already running, quitting.")
+                        self.fd = None
                         raise SingletException(
                             "Another instance is already running, quitting.")
                     else:
                         logger.exception("Something went wrong")
+                        self.fd = None
                         raise
             else:
                 logger.exception("Something went wrong")
                 # Anything else is horribly wrong, we need to raise to the
                 # upper level so the following code in this try clause
                 # won't execute.
+                self.fd = None
                 raise
         # By this moment the file should be locked or we should exit so
         # there should realistically be no error here, or it can raise
@@ -180,6 +184,7 @@ class Singlet:
                 logger.exception("Interesting state")
             logger.error(
                 "Another instance is already running, quitting.")
+            self.fd = None
             raise SingletException(
                 "Another instance is already running, quitting.")
         # Barring any OS/Hardware issue this musn't throw anything. But
