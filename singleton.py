@@ -200,7 +200,7 @@ class Singlet:
         # won't fire up (*BSD).
         # If not and it is still running we'd rather actually exit
         # right here.
-        oldPid = os.read(self.fd, 64).strip().rstrip("#")
+        oldPid = os.read(self.fd, 64).strip().lstrip("#")
         return (oldPid and int(oldPid) > 0 and oldPid != self.pid and pid_exists(oldPid))
 
     def __del__(self):
