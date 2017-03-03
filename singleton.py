@@ -206,7 +206,7 @@ class Singlet:
         # If not and it is still running we'd rather actually exit
         # right here.
         oldPid = os.read(self.fd, 64).strip().lstrip("#")
-        return (oldPid and int(oldPid) > 0 and oldPid != self.pid and pid_exists(oldPid))
+        return (oldPid and int(oldPid) > 0 and int(oldPid) != int(self.pid) and pid_exists(int(oldPid)))
 
     def __del__(self):
         # If we are not initialized don't run the clause
