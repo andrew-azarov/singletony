@@ -25,6 +25,24 @@ import logging
 import errno
 import unittest
 
+LIN = None
+WIN = None
+BSD = None
+try:
+    import fcntl
+    LIN = 1
+except ImportError:
+    # Not *NIX
+    pass
+try:
+    import msvcrt
+    WIN = 1
+except ImportError:
+    # Not Windows
+    pass
+
+BSD = hasattr(os, 'O_EXLOCK')
+
 
 def pid_exists(pid):
     """Check whether pid exists in the current process table."""
@@ -108,57 +126,82 @@ class Singlet:
         self.pid = str(os.getpid())
         self.fd = None
         logger.info("Singlet lockfile: " + self.lockfile)
-        oldPid = None
         try:
-            self.fd = os.open(self.lockfile, os.O_CREAT |
-                              os.O_EXCL | os.O_RDWR)
+            # If advance UNIX system with atomic locks on open
+            if BSD:
+                self.fd = os.open(self.lockfile, os.O_CREAT | os.O_EXCL |
+                                  os.O_RDWR | os.O_EXLOCK | os.O_NONBLOCK)
+            else:
+                self.fd = os.open(self.lockfile, os.O_CREAT |
+                                  os.O_EXCL | os.O_RDWR)
+                if WIN:
+                    msvcrt.locking(self.fd, msvcrt.LK_NBRLCK, 65)
+                if LIN:
+                    fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (IOError, OSError) as e:
-            if e.errno == errno.ENOENT:
-                # It's ok, we just log it as info but the pid file is
-                # non existent
-                logger.info(e)
-            elif e.errno in (errno.EPERM, errno.EEXIST):
+            if e.errno in (errno.EPERM, errno.EWOULDBLOCK):
                 logger.error(
                     "Another instance is already running, quitting.")
                 raise SingletException(
                     "Another instance is already running, quitting.")
+            elif e.errno == errno.EEXIST:
+                # Workaround for Linux/Windows mostly which lacks atomic
+                # locking on open
+                self.fd = os.open(self.lockfile, os.O_RDWR)
+                try:
+                    if WIN:
+                        msvcrt.locking(self.fd, msvcrt.LK_NBRLCK, 65)
+                    if LIN:
+                        fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except (IOError, OSError) as e:
+                    # Some entity has been faster than us if we WOULDBLOCK
+                    if e.errno in (errno.EPERM, errno.EWOULDBLOCK):
+                        logger.error(
+                            "Another instance is already running, quitting.")
+                        raise SingletException(
+                            "Another instance is already running, quitting.")
+                    else:
+                        logger.exception("Something went wrong")
+                        raise
             else:
                 logger.exception("Something went wrong")
                 # Anything else is horribly wrong, we need to raise to the
                 # upper level so the following code in this try clause
                 # won't execute.
                 raise
-        else:
-            # By this moment the file should be locked or we should exit so
-            # there should realistically be no error here, or it can raise
-            oldPid = os.read(self.fd, 64).strip().rstrip("#")
-            if oldPid and oldPid != self.pid and pid_exists(oldPid):
-                # Some OS actually recycle pids within same range so we
-                # have to check whether oldPid is not the new one so this
-                # won't fire up (*BSD).
-                # If not and it is still running we'd rather actually exit
-                # right here.
-                try:
-                    os.close(self.fd)
-                except OSError as e:
-                    # We shouldn't raise here anything. Because we don't
-                    # actually care
-                    logger.exception("Interesting state")
-                logger.error(
-                    "Another instance is already running, quitting.")
-                raise SingletException(
-                    "Another instance is already running, quitting.")
-            # Barring any OS/Hardware issue this musn't throw anything. But
-            # even if it throws we should raise it because it means we
-            # shouldn't run and some serious problem is already happening. So
-            # no, I'm not going to escape this one in try/except.
-            if hasattr(os, "ftruncate"):
-                os.ftruncate(self.fd, 0)  # Erase
-            os.lseek(self.fd, 0, 0)  # Rewind
-            # Write PID with WIN fix
-            os.write(self.fd, self.pid.rjust(64, "#"))
-            if hasattr(os, "fsync"):
-                os.fsync(self.fd)
+        # By this moment the file should be locked or we should exit so
+        # there should realistically be no error here, or it can raise
+        if self.oldpid_is_running():
+            try:
+                os.close(self.fd)
+            except OSError as e:
+                # We shouldn't raise here anything. Because we don't
+                # actually care
+                logger.exception("Interesting state")
+            logger.error(
+                "Another instance is already running, quitting.")
+            raise SingletException(
+                "Another instance is already running, quitting.")
+        # Barring any OS/Hardware issue this musn't throw anything. But
+        # even if it throws we should raise it because it means we
+        # shouldn't run and some serious problem is already happening. So
+        # no, I'm not going to escape this one in try/except.
+        if hasattr(os, "ftruncate"):
+            os.ftruncate(self.fd, 0)  # Erase
+        os.lseek(self.fd, 0, 0)  # Rewind
+        # Write PID with WIN fix
+        os.write(self.fd, self.pid.rjust(64, "#"))
+        if hasattr(os, "fsync"):
+            os.fsync(self.fd)
+
+    def oldpid_is_running(self):
+        # Some OS actually recycle pids within same range so we
+        # have to check whether oldPid is not the new one so this
+        # won't fire up (*BSD).
+        # If not and it is still running we'd rather actually exit
+        # right here.
+        oldPid = os.read(self.fd, 64).strip().rstrip("#")
+        return (oldPid and int(oldPid) > 0 and oldPid != self.pid and pid_exists(oldPid))
 
     def __del__(self):
         # If we are not initialized don't run the clause
